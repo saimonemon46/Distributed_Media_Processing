@@ -5,6 +5,8 @@ import io
 import os
 import uuid
 
+import time
+
 app = FastAPI()
 
 
@@ -21,6 +23,12 @@ def health():
 
 @app.post("/jobs")
 def create_job(file : UploadFile = File(...)):
+    
+    # Simulate expensive processing
+    time.sleep(5)
+    
+    
+    
     # 1. Read Uploaded Files
     contents = file.file.read()
     
@@ -28,7 +36,7 @@ def create_job(file : UploadFile = File(...)):
     image = Image.open(io.BytesIO(contents))  # Open image with pillow
     
     # 3. Resize image
-    image.thumbnail((1000,200))
+    image.thumbnail((500,500))
     
     # 4. Generate Unique File name
     filename = f"{uuid.uuid4()}.jpg"
