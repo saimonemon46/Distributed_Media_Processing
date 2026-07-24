@@ -83,7 +83,16 @@ def create_job(file : UploadFile = File(...),
         # 7. Convert RGB and Save
         image.convert("RGB").save(output_path)
         
-        # 8. Return Result
+        
+        # 8. Processing completed successfully
+        job.status = "COMPLETED"
+        job.completed_at = datetime.now(timezone.utc)
+        job.output_path = output_path
+
+        db.commit()
+        db.refresh(job)
+        
+        # 9. Return Result
         # return {
         #     "status": "completed",
         #     "original_filename": file.filename,
