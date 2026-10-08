@@ -21,3 +21,7 @@ output/
 Thumbs.db
 
 need.txt
+
+# Agent Progress Tracking (Untracked)
+WORK_TRACKER.md
+SYSTEM_EXPLAINER.md
