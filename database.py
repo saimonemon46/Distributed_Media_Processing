@@ -1,29 +1,14 @@
-import os
-from dotenv import load_dotenv
+# =====================================================================
+# Database Compatibility Shim
+# =====================================================================
+# Re-exports database infrastructure from app.infrastructure.database.
+# =====================================================================
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import declarative_base, sessionmaker
-
-load_dotenv()
-
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-engine = create_engine(DATABASE_URL)
-
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
+from app.infrastructure.database import (
+    engine,
+    SessionLocal,
+    Base,
+    get_db,
 )
 
-Base = declarative_base()
-
-
-def get_db():
-    db = SessionLocal()
-
-    try:
-        yield db
-    finally:
-        db.close()
+__all__ = ["engine", "SessionLocal", "Base", "get_db"]
