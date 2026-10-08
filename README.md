@@ -116,8 +116,10 @@ Distributed_Media_Processing/
 ├── Dockerfile                   # Container build recipe
 ├── HUMAN_SCENARIO.md            # Real-world end-to-end human walkthrough
 ├── PHASES.md                    # Engineering roadmap & phase index
+├── pyproject.toml               # Python package & tool configurations
 ├── requirements.txt             # Pinned project dependencies
-└── test_app.py                  # Test runner entrypoint
+└── scripts/
+    └── run_tests.py             # Automated test suite runner
 ```
 
 ---
@@ -199,7 +201,7 @@ curl -X GET http://localhost:8000/jobs/3fa85f64-5717-4562-b3fc-2c963f66afa6
 
 Execute the end-to-end integration test suite against the running stack:
 ```bash
-python test_app.py
+python scripts/run_tests.py
 ```
 This tests:
 1. API liveness probe.
