@@ -1,4 +1,10 @@
 venv/
+.venv/
+frontend/
+node_modules/
+.next/
 __pycache__/
+*.py[cod]
 .git/
 .gitignore
+output/

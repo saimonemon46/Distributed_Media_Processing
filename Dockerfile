@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Install system dependencies for media processing (FFmpeg for video, poppler for documents)
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg poppler-utils && rm -rf /var/lib/apt/lists/*
+
 # Set working directory
 WORKDIR /app
 

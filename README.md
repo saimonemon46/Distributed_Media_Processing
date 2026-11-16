@@ -1,38 +1,53 @@
-# Distributed Media Processing Engine
-## Scalable, Asynchronous Image Processing Pipeline with RabbitMQ & MinIO
+# MediaFlow - Distributed Multi-Modal Media Processing Platform
 
-> **Author:** Md. Saimon Hasan Emon (Backend & Systems Engineer)  
-> **Tech Stack:** Python 3.12+, FastAPI, PostgreSQL 17, MinIO (S3 API), RabbitMQ, Pillow, Docker  
-> **Architecture:** Decoupled Event-Driven Microservices  
+[![Next.js](https://img.shields.io/badge/Frontend-Next.js%2016%20(App%20Router)-black?style=flat-square&logo=next.js)](https://nextjs.org/)
+[![FastAPI](https://img.shields.io/badge/API-FastAPI-009688?style=flat-square&logo=fastapi)](https://fastapi.tiangolo.com/)
+[![RabbitMQ](https://img.shields.io/badge/Broker-RabbitMQ%20AMQP-FF6600?style=flat-square&logo=rabbitmq)](https://www.rabbitmq.com/)
+[![PostgreSQL](https://img.shields.io/badge/Database-PostgreSQL%2017-336791?style=flat-square&logo=postgresql)](https://www.postgresql.org/)
+[![MinIO](https://img.shields.io/badge/Object%20Storage-MinIO%20S3-C72C48?style=flat-square&logo=minio)](https://min.io/)
+[![Tailwind CSS](https://img.shields.io/badge/Styling-Tailwind%20CSS-38B2AC?style=flat-square&logo=tailwind-css)](https://tailwindcss.com/)
 
----
+**MediaFlow** is a production-grade, distributed multi-modal media processing SaaS platform designed to handle CPU-intensive transformations asynchronously without blocking HTTP ingress. 
 
-## 1. System Overview
-
-This project is a high-throughput, horizontally scalable media processing system designed to eliminate server starvation during heavy media transformations. It demonstrates how to transition from a naive synchronous API into a decoupled, event-driven architecture using **FastAPI**, **RabbitMQ**, **PostgreSQL**, and **MinIO (S3-compatible object storage)**.
-
-### Core Engineering Guarantees:
-1. **Sub-50ms Non-Blocking Ingress:** File uploads are accepted immediately via HTTP `202 Accepted`. Heavy CPU computations are offloaded to background workers.
-2. **Stateless Scalability:** No media files are stored on local container filesystems. Raw and processed assets live in MinIO S3 object storage.
-3. **Guaranteed Delivery & Zero Task Loss:** RabbitMQ durable queues (`durable=True`) and persistent message delivery (`delivery_mode=2`) ensure tasks survive broker restarts.
-4. **Fair Workload Distribution:** Workers enforce `prefetch_count=1`, guaranteeing that tasks are balanced across worker instances regardless of varying image dimensions.
-5. **Poison-Pill Fault Isolation:** Malformed or corrupt image files are trapped in resilient exception boundaries, recorded as `FAILED` in PostgreSQL, and acknowledged from the queue to prevent crash loops.
-6. **Direct-to-Client Asset Egress:** Processed media files are delivered via temporary, cryptographically signed S3 Presigned URLs, conserving API egress bandwidth.
-7. **Graceful OS Signal Interception:** Workers intercept Linux `SIGINT` and `SIGTERM` signals to drain in-flight image tasks before shutting down cleanly.
+The system decouples API requests from background compute through a persistent **RabbitMQ** task queue, streams raw and processed assets directly through **MinIO (S3 API)**, tracks task lifecycle states in **PostgreSQL 17**, and delivers a real-time operational dashboard with interactive multi-modal asset previews built with **Next.js 16 (App Router)**.
 
 ---
 
-## 2. High-Level System Architecture
+## 1. Core Engineering Principles
+
+1. **Sub-50ms Non-Blocking Ingress**: File uploads return HTTP `202 Accepted` immediately upon writing raw bytes to S3 and enqueuing the message. Heavy CPU transformations are delegated to background worker instances.
+2. **Fair-Dispatch Queue Architecture**: Background workers configure `prefetch_count=1`, guaranteeing even distribution across worker containers without Head-of-Line queue starvation.
+3. **Stateless Scalability**: No assets touch container filesystems permanently; all media streams directly via in-memory byte buffers (`io.BytesIO`) to MinIO.
+4. **Fault-Isolated Poison-Pill Handling**: Corrupt or malformed files are caught at resilient boundaries, persisted as `FAILED` in PostgreSQL with exact tracebacks, and acknowledged to prevent infinite re-delivery loops.
+5. **Direct-to-Client Asset Delivery**: Processed files and previews are delivered via cryptographically signed, time-bound S3 Presigned URLs (`3600s`), offloading bandwidth egress from the API server.
+6. **Graceful OS Drain**: Workers intercept Linux `SIGINT` and `SIGTERM` signals to cleanly drain in-flight tasks before terminating.
+
+---
+
+## 2. Multi-Modal Processing Pipelines
+
+MediaFlow classifies and processes assets across 4 distinct media categories:
+
+| Format Category | Supported Formats | Engine | Processing Operation & Artifacts |
+|---|---|---|---|
+| **Images** | `.jpg`, `.jpeg`, `.png`, `.webp`, `.gif` | **Pillow** | 500×500 aspect-ratio preserving thumbnailing, RGB conversion, 85% JPEG compression. |
+| **Documents** | `.pdf` | **PyMuPDF (`fitz`)** | Page count, title, and author metadata extraction, plus high-res Page 1 poster rendering (`150 DPI`). |
+| **Tabular Datasets** | `.csv`, `.xlsx`, `.xls` | **Pandas & OpenPyXL** | Schema profiling, column data types, missing value counts, and top-10 preview rows (`summary.json`). |
+| **Video** | `.mp4`, `.mov`, `.webm` | **FFmpeg** | Duration, resolution, codec, and framerate probing, plus 1.0s poster-frame extraction without queue blocking. |
+
+---
+
+## 3. High-Level System Architecture
 
 ```mermaid
 flowchart TD
-    Client["Client / Web Browser"]
+    Client["Client / Web Browser (Next.js 16)"]
 
-    subgraph API_Layer ["API Layer"]
+    subgraph API_Layer ["Ingress Layer"]
         API["FastAPI API Server (app.api)"]
     end
 
-    subgraph Messaging ["Message Broker"]
+    subgraph Broker ["Message Broker"]
         RMQ["RabbitMQ Queue (media_processing_jobs)"]
     end
 
@@ -41,169 +56,132 @@ flowchart TD
         MinIO[("MinIO Object Storage (media-bucket)")]
     end
 
-    subgraph Worker_Layer ["Worker Layer"]
-        Worker["Background Worker (app.worker)"]
+    subgraph Worker_Layer ["Distributed Worker Layer"]
+        Worker["Background Consumer (app.worker)"]
     end
 
-    Client -->|"1. POST /jobs (Multipart Upload)"| API
+    Client -->|"1. POST /jobs (Multipart File)"| API
     API -->|"2. Stream raw bytes"| MinIO
-    API -->|"3. Insert PENDING job"| DB
-    API -->|"4. Publish task (job_id, key)"| RMQ
+    API -->|"3. Record PENDING state"| DB
+    API -->|"4. Publish persistent message"| RMQ
     API -->|"5. Return HTTP 202 Accepted"| Client
 
-    RMQ -->|"6. Deliver task (Prefetch=1)"| Worker
+    RMQ -->|"6. Fair dispatch (Prefetch=1)"| Worker
     Worker -->|"7. Update status to PROCESSING"| DB
-    Worker -->|"8. Fetch raw image"| MinIO
-    Worker -->|"9. Resize thumbnail (Pillow)"| Worker
-    Worker -->|"10. Upload processed JPEG"| MinIO
+    Worker -->|"8. Stream raw asset bytes"| MinIO
+    Worker -->|"9. Multi-Modal Transform (Pillow/PDF/Pandas/FFmpeg)"| Worker
+    Worker -->|"10. Upload processed artifact & poster"| MinIO
     Worker -->|"11. Update status to COMPLETED"| DB
     Worker -->|"12. basic_ack"| RMQ
 
     Client -->|"13. GET /jobs/{id} (Poll status)"| API
-    API -->|"14. Read status & generate Presigned URL"| DB
-    API -->|"15. Return status + download_url"| Client
-    Client -->|"16. Direct secure download"| MinIO
+    API -->|"14. Read status & generate Presigned URLs"| DB
+    API -->|"15. Return status + download_url + preview_url"| Client
+    Client -->|"16. Direct secure asset stream"| MinIO
 ```
 
 ---
 
-## 3. Master Documentation Index
+## 4. API Endpoints
 
-All architectural blueprints, system design trade-offs, and verification manuals are available in the [`docs/`](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs) directory:
+| Method | Endpoint | Description | Status Code |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/health` | API server liveness check (supports `GET` and `HEAD`) | `200 OK` |
+| `GET` | `/stats` | Live telemetry: RabbitMQ queue depth, consumer count & media type counts | `200 OK` |
+| `POST` | `/jobs` | Upload asset and enqueue asynchronous multi-modal transformation | `202 Accepted` |
+| `GET` | `/jobs` | List jobs with pagination, status filter, media format filter & search | `200 OK` |
+| `GET` | `/jobs/{job_id}` | Query job state, timestamps, duration, error, and presigned S3 URLs | `200 OK` |
 
-| Document | Description |
-| :--- | :--- |
-| [**HUMAN_SCENARIO.md**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/HUMAN_SCENARIO.md) | **End-to-End Human Walkthrough:** Real-world story of artisan seller Sarah Rahman uploading 4K DSLR photos. |
-| [**PHASES.md**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/PHASES.md) | **Implementation Roadmap:** Phase-by-phase engineering milestones. |
-| [**00. Master Interview Defense**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/00_MASTER_KNOWLEDGE_AND_INTERVIEW_DEFENSE_MANUAL.md) | **Interview Defense Manual:** Technical trade-offs, queueing protocols, and architectural Q&A. |
-| [**01. Project Vision & Lifecycle**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/01_PROJECT_VISION_AND_LIFECYCLE.md) | System motivation, job finite state machine (`PENDING` $\rightarrow$ `COMPLETED`). |
-| [**02. Architecture & LLD Patterns**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/02_ARCHITECTURE_AND_LLD_PATTERNS.md) | Layered package structure, GoF/Cloud patterns (Storage Gateway, Competing Consumers). |
-| [**03. Core CS Deep Dive**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/03_CORE_CS_DEEP_DIVE.md) | AMQP 0-9-1 internals, in-memory zero-copy streams, HMAC-SHA256 presigned URL crypto. |
-| [**04. Module Specifications**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/04_MODULE_AND_COMPONENT_SPECIFICATIONS.md) | Component-by-component schema, column, and interface specifications. |
-| [**05. Testing & Verification**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/05_TESTING_BENCHMARKING_AND_VERIFICATION.md) | Integration test execution, happy path validation, and poison-pill recovery checks. |
-| [**06. System Flow Diagram**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/06_END_TO_END_SYSTEM_FLOW_DIAGRAM.md) | Complete end-to-end Mermaid sequence and data transformation matrix. |
-| [**07. Implementation Phases**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/07_IMPLEMENTATION_PHASES.md) | Exhaustive implementation phase details and deliverable breakdowns. |
-| [**08. Human Scenario Walkthrough**](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/docs/08_HUMAN_SCENARIO_WALKTHROUGH.md) | Detailed metrics, latencies, and business impact for the user story. |
+See [API_INTEGRATION.md](file:///home/saimon/Emon_work/project/Distributed_Media_Processing/API_INTEGRATION.md) for full request/response schemas.
 
 ---
 
-## 4. Directory Structure
+## 5. Local Development Quickstart
 
-```
-Distributed_Media_Processing/
-├── app/
-│   ├── api/                     # Presentation layer
-│   │   ├── routes/              # Sub-routers (/health, /jobs)
-│   │   ├── main.py              # FastAPI application factory & lifespan
-│   │   └── schemas.py           # Pydantic validation schemas
-│   ├── core/                    # Core configuration
-│   │   └── config.py            # Typed settings & environment variables
-│   ├── domain/                  # Domain entities
-│   │   └── models.py            # SQLAlchemy Job schema & JobStatus
-│   ├── infrastructure/          # External integrations
-│   │   ├── database.py          # PostgreSQL sessionmaker & engine
-│   │   ├── storage.py           # MinIO / S3 wrapper (stream I/O, presigned URLs)
-│   │   └── rabbitmq.py          # AMQP connection factory & task publisher
-│   └── worker/                  # Background worker
-│       └── consumer.py          # RabbitMQ consumer & Pillow resizing engine
-├── docs/                        # Complete technical documentation suite (00 - 08)
-├── tests/                       # Integration & unit test suites
-│   ├── conftest.py              # Fixtures & mock byte sequences
-│   ├── test_health.py           # Health check verification
-│   └── test_e2e_pipeline.py     # End-to-end valid & failure pipeline tests
-├── .env.example                 # Environment configuration blueprint
-├── docker-compose.yml           # Multi-container orchestration (5 services)
-├── Dockerfile                   # Container build recipe
-├── HUMAN_SCENARIO.md            # Real-world end-to-end human walkthrough
-├── PHASES.md                    # Engineering roadmap & phase index
-├── pyproject.toml               # Python package & tool configurations
-├── requirements.txt             # Pinned project dependencies
-└── scripts/
-    └── run_tests.py             # Automated test suite runner
-```
+### Prerequisites
+- Docker & Docker Compose
+- Node.js 18+ and npm
+- Python 3.12+ (for running tests or local workers)
 
----
-
-## 5. Quickstart & Deployment
-
-### Prerequisites:
-- **Docker** and **Docker Compose**
-- **Python 3.12+** (optional, for running tests locally outside Docker)
-
-### 1. Configure Environment:
+### Step 1: Start Backend Services (Docker Compose)
 ```bash
+# Clone the repository
+git clone https://github.com/saimonemon46/Distributed_Media_Processing.git
+cd Distributed_Media_Processing
+
+# Copy environment variables
 cp .env.example .env
-```
 
-### 2. Launch the System:
-```bash
+# Spin up all backend infrastructure (API, Worker, DB, MinIO, RabbitMQ)
 docker compose up --build -d
 ```
-This spins up 5 coordinated services:
-- **`api`:** FastAPI web server exposed on `http://localhost:8000`
-- **`worker`:** Media processing consumer listening to RabbitMQ
-- **`db`:** PostgreSQL 17 database on port `5432`
-- **`minio`:** S3-compatible object storage on port `9000` (Console on `http://localhost:9001`)
-- **`rabbitmq`:** AMQP message broker on port `5672` (Management UI on `http://localhost:15672`)
+
+Verify service availability:
+- **FastAPI Ingress**: [http://localhost:8000/health](http://localhost:8000/health) (Swagger UI: [http://localhost:8000/docs](http://localhost:8000/docs))
+- **MinIO Console**: [http://localhost:9001](http://localhost:9001) (`minioadmin` / `minioadminpassword`)
+- **RabbitMQ Management**: [http://localhost:15672](http://localhost:15672) (`guest` / `guest`)
+
+### Step 2: Start Frontend Application (Next.js 16)
+```bash
+cd frontend
+
+# Install frontend dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+Visit [http://localhost:3000](http://localhost:3000) to access the **MediaFlow** SaaS dashboard.
 
 ---
 
-## 6. API Usage Guide
+## 6. Testing
 
-### 1. Health Check
+### Run Integration Tests
+Validates API health, end-to-end multi-modal processing (Image, CSV, PDF, and failure handling):
 ```bash
-curl -X GET http://localhost:8000/health
-```
-```json
-{
-  "status": "Healthy"
-}
+python test_app.py
 ```
 
-### 2. Submit Media for Processing (Non-Blocking)
+### Run Backend Unit Tests
+Hermetic in-memory SQLite unit tests verifying API endpoints and multi-modal MIME detection:
 ```bash
-curl -X POST http://localhost:8000/jobs \
-  -F "file=@/path/to/my_photo.jpg"
-```
-**Response (`202 Accepted` in $<50\text{ms}$):**
-```json
-{
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "status": "PENDING",
-  "original_filename": "my_photo.jpg",
-  "original_key": "uploads/3fa85f64-5717-4562-b3fc-2c963f66afa6/my_photo.jpg"
-}
+pytest test_backend_api.py
 ```
 
-### 3. Poll Job Status & Retrieve Presigned Download URL
+### Run Frontend Unit & Integration Tests
 ```bash
-curl -X GET http://localhost:8000/jobs/3fa85f64-5717-4562-b3fc-2c963f66afa6
+cd frontend
+npm test
 ```
-**Response (`200 OK` when completed):**
-```json
-{
-  "id": "3fa85f64-5717-4562-b3fc-2c963f66afa6",
-  "status": "COMPLETED",
-  "original_filename": "my_photo.jpg",
-  "original_key": "uploads/3fa85f64-5717-4562-b3fc-2c963f66afa6/my_photo.jpg",
-  "created_at": "2026-10-08T10:00:01.000Z",
-  "started_at": "2026-10-08T10:00:02.000Z",
-  "completed_at": "2026-10-08T10:00:03.000Z",
-  "output_key": "processed/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg",
-  "error": null,
-  "download_url": "http://localhost:9000/media-bucket/processed/3fa85f64-5717-4562-b3fc-2c963f66afa6.jpg?AWSAccessKeyId=minioadmin&Signature=..."
-}
+
+### Run Production Build Verification
+```bash
+cd frontend
+npm run build
 ```
 
 ---
 
-## 7. Automated Verification & Testing
+## 7. Cloud Deployment Guide
 
-Execute the end-to-end integration test suite against the running stack:
-```bash
-python scripts/run_tests.py
-```
-This tests:
-1. API liveness probe.
-2. Valid image processing, status transition to `COMPLETED`, and direct S3 presigned URL download.
-3. Poison pill isolation: Uploads corrupt bytes, verifies transition to `FAILED`, and checks error details.
+### Frontend Deployment: Vercel
+1. Import repository into [Vercel](https://vercel.com/).
+2. Set **Root Directory** to `frontend`.
+3. Framework Preset: **Next.js**.
+4. Configure Environment Variable:
+   - `NEXT_PUBLIC_API_BASE_URL`: `https://your-api-domain.onrender.com`
+5. Click **Deploy**.
+
+### Backend Deployment: Render / Railway / AWS
+1. **Database**: Provision a managed PostgreSQL instance (e.g. Render PostgreSQL, Supabase, Neon) and set `DATABASE_URL`.
+2. **Message Broker**: Provision a managed RabbitMQ broker (e.g. [CloudAMQP](https://www.cloudamqp.com/)) and set `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`.
+3. **Object Storage**: Provision an S3-compatible bucket (AWS S3, Cloudflare R2, or persistent MinIO) and configure `MINIO_ENDPOINT`, `MINIO_PUBLIC_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, and `MINIO_BUCKET_NAME`.
+4. **FastAPI Web Service**:
+   - Build command: `pip install -r requirements.txt`
+   - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+   - Set `ALLOWED_ORIGINS` to your deployed Vercel frontend URL.
+5. **Background Worker Service**:
+   - Start command: `python worker.py`
+   - Deploy as a background worker with identical database, broker, and storage environment variables.
