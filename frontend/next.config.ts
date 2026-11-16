@@ -16,6 +16,9 @@ const nextConfig: NextConfig = {
       },
     },
   },
+  experimental: {
+    proxyClientMaxBodySize: "100mb",
+  },
   async rewrites() {
     const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
     return [
